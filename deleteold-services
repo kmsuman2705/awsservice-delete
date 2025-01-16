@@ -4,59 +4,71 @@ pipeline {
     parameters {
         string(name: 'AWS_ACCOUNT_ID', description: 'AWS Account ID to operate in')
         string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS Region to operate in')
-        string(name: 'INSTANCE_ID', description: 'EC2 Instance ID to delete')
     }
 
     stages {
-        stage('Validate EC2 Instance ID') {
+        stage('List and Validate EC2 Instances') {
             steps {
                 script {
                     try {
-                        echo "Validating EC2 instance ID: ${params.INSTANCE_ID} in AWS Region: ${params.AWS_REGION}"
+                        // Get the date and time from 2 minutes ago using the current UTC time
+                        def dateThreshold = sh(script: "date --date='2 minutes ago' --utc +'%Y-%m-%dT%H:%M:%SZ'", returnStdout: true).trim()
+                        echo "Looking for EC2 instances older than ${dateThreshold} in AWS Account ID: ${params.AWS_ACCOUNT_ID} and Region: ${params.AWS_REGION}"
 
-                        // Check if the provided instance ID exists
-                        def describeInstanceResult = sh(script: """
-                            aws ec2 describe-instances --instance-ids ${params.INSTANCE_ID} --region ${params.AWS_REGION} \
-                            --query "Reservations[].Instances[].[InstanceId]" --output text
+                        // List all EC2 instances in the specified region
+                        def ec2Instances = sh(script: """
+                            aws ec2 describe-instances --region ${params.AWS_REGION} \
+                            --query "Reservations[].Instances[].[InstanceId, LaunchTime]" \
+                            --output text
                         """, returnStdout: true).trim()
 
-                        // If the describe-instances result is empty, it means the instance does not exist
-                        if (describeInstanceResult == "") {
-                            error "Invalid instance ID: ${params.INSTANCE_ID}. No such instance exists in the provided region."
+                        // Check if we found any EC2 instances
+                        if (ec2Instances) {
+                            def instancesToDelete = []
+                            def lines = ec2Instances.split("\n")
+                            lines.each { line ->
+                                def (instanceId, launchTime) = line.split("\t")
+                                def launchDate = launchTime.trim()
+
+                                // Compare the launch time of the EC2 instance with the dateThreshold
+                                if (launchDate < dateThreshold) {
+                                    instancesToDelete.add(instanceId)
+                                }
+                            }
+
+                            if (instancesToDelete.size() > 0) {
+                                echo "The following EC2 instances are older than 2 minutes and will be deleted: ${instancesToDelete.join(', ')}"
+                                
+                                // Delete the instances that are older than 2 minutes
+                                instancesToDelete.each { instanceId ->
+                                    try {
+                                        echo "Attempting to terminate EC2 instance: ${instanceId}"
+                                        
+                                        // Terminate the EC2 instance
+                                        def terminateResult = sh(script: """
+                                            aws ec2 terminate-instances --instance-ids ${instanceId} --region ${params.AWS_REGION} \
+                                            --query 'TerminatingInstances[0].InstanceId' --output text
+                                        """, returnStdout: true).trim()
+
+                                        // Check if termination was successful
+                                        if (terminateResult == instanceId) {
+                                            echo "Successfully initiated termination of EC2 instance: ${instanceId}"
+                                        } else {
+                                            error "Failed to terminate EC2 instance: ${instanceId}. Please check the instance ID or region."
+                                        }
+                                    } catch (Exception e) {
+                                        echo "Error terminating EC2 instance ${instanceId}: ${e.getMessage()}"
+                                    }
+                                }
+                            } else {
+                                echo "No EC2 instances older than 2 minutes found."
+                            }
                         } else {
-                            echo "Instance ID ${params.INSTANCE_ID} is valid and exists."
+                            echo "No EC2 instances found in the region ${params.AWS_REGION}."
                         }
                     } catch (Exception e) {
                         echo "Error: ${e.getMessage()}"
                         currentBuild.result = 'FAILURE'
-                        error "Pipeline stopped due to invalid instance ID."
-                    }
-                }
-            }
-        }
-
-        stage('Terminate EC2 Instance') {
-            steps {
-                script {
-                    try {
-                        echo "Attempting to terminate EC2 instance: ${params.INSTANCE_ID} in AWS Region: ${params.AWS_REGION}"
-
-                        // Attempt to terminate the EC2 instance
-                        def terminateResult = sh(script: """
-                            aws ec2 terminate-instances --instance-ids ${params.INSTANCE_ID} --region ${params.AWS_REGION} \
-                            --query 'TerminatingInstances[0].InstanceId' --output text
-                        """, returnStdout: true).trim()
-
-                        // Check if the instance termination was successful
-                        if (terminateResult == params.INSTANCE_ID) {
-                            echo "Successfully initiated termination of EC2 instance: ${params.INSTANCE_ID}"
-                        } else {
-                            error "Failed to terminate EC2 instance: ${params.INSTANCE_ID}. Please check the instance ID or region."
-                        }
-                    } catch (Exception e) {
-                        echo "Error: ${e.getMessage()}"
-                        currentBuild.result = 'FAILURE'
-                        error "Error terminating the EC2 instance."
                     }
                 }
             }
