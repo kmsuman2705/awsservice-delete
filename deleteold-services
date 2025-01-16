@@ -1,3 +1,5 @@
+import groovy.json.JsonSlurper
+
 pipeline {
     agent any
 
@@ -20,13 +22,14 @@ pipeline {
                         // Debug the stsResult to understand what we're getting
                         echo "STS Result: ${stsResult}"
 
+                        // Parse the JSON response from AWS CLI
+                        def jsonSlurper = new JsonSlurper()
+                        def parsedResult = jsonSlurper.parseText(stsResult)
+
+                        // Extract account ID from the parsed JSON response
+                        def awsAccountId = parsedResult.Account
+
                         // Check if the AWS account ID matches the expected one
-                        if (!stsResult.contains("Account")) {
-                            error "Invalid AWS credentials or account. Unable to verify account."
-                        }
-
-                        def awsAccountId = stsResult.tokenize("\n").find { it.startsWith("Account") }?.split(":")[1]?.trim()
-
                         if (awsAccountId != params.AWS_ACCOUNT_ID) {
                             error "Provided AWS Account ID does not match the authenticated account ID. Expected: ${params.AWS_ACCOUNT_ID}, but found: ${awsAccountId}."
                         }
