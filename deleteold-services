@@ -1,0 +1,80 @@
+pipeline {
+    agent any
+
+    parameters {
+        string(name: 'AWS_ACCOUNT_ID', description: 'AWS Account ID to operate in')
+        string(name: 'AWS_REGION', defaultValue: 'us-east-1', description: 'AWS Region to operate in')
+    }
+
+    stages {
+        stage('List and Delete EC2 Instances') {
+            steps {
+                script {
+                    try {
+                        // Get the date and time from 2 minutes ago using the current UTC time
+                        def dateThreshold = sh(script: "date --date='2 minutes ago' --utc +'%Y-%m-%dT%H:%M:%SZ'", returnStdout: true).trim()
+                        echo "Looking for EC2 instances launched before ${dateThreshold} in AWS Account ID: ${params.AWS_ACCOUNT_ID} and Region: ${params.AWS_REGION}"
+
+                        // List EC2 instances and filter by launch time
+                        def ec2Instances = sh(script: """
+                            aws ec2 describe-instances --region ${params.AWS_REGION} \
+                            --query "Reservations[].Instances[].[InstanceId, LaunchTime]" \
+                            --output text
+                        """, returnStdout: true).trim()
+
+                        // Check if we found any EC2 instances
+                        if (ec2Instances) {
+                            def instancesToDelete = []
+                            def lines = ec2Instances.split("\n")
+                            lines.each { line ->
+                                def (instanceId, launchTime) = line.split("\t")
+                                def launchDate = launchTime.trim()
+
+                                // Compare the launch time of the EC2 instance with the dateThreshold
+                                if (launchDate < dateThreshold) {
+                                    instancesToDelete.add(instanceId)
+                                }
+                            }
+
+                            if (instancesToDelete.size() > 0) {
+                                echo "The following EC2 instances are older than 2 minutes and will be deleted: ${instancesToDelete.join(', ')}"
+                                
+                                // Delete the instances that are older than 2 minutes
+                                instancesToDelete.each { instanceId ->
+                                    try {
+                                        echo "Attempting to terminate EC2 instance: ${instanceId}"
+                                        
+                                        // Attempt to terminate the instance and check for errors
+                                        def result = sh(script: "aws ec2 terminate-instances --instance-ids ${instanceId} --region ${params.AWS_REGION}", returnStatus: true)
+                                        if (result != 0) {
+                                            error "Failed to terminate EC2 instance: ${instanceId}. Instance may not exist or an error occurred."
+                                        }
+                                        echo "Successfully initiated termination of EC2 instance: ${instanceId}"
+                                    } catch (Exception e) {
+                                        echo "Error terminating EC2 instance ${instanceId}: ${e.getMessage()}"
+                                    }
+                                }
+                            } else {
+                                echo "No EC2 instances older than 2 minutes found."
+                            }
+                        } else {
+                            echo "No EC2 instances found in the region ${params.AWS_REGION}."
+                        }
+                    } catch (Exception e) {
+                        echo "Error: ${e.getMessage()}"
+                        currentBuild.result = 'FAILURE'
+                    }
+                }
+            }
+        }
+    }
+
+    post {
+        failure {
+            echo 'The pipeline failed!'
+        }
+        success {
+            echo 'EC2 instance deletion completed successfully.'
+        }
+    }
+}
