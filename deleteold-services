@@ -7,6 +7,38 @@ pipeline {
     }
 
     stages {
+        stage('Validate AWS Credentials and Region') {
+            steps {
+                script {
+                    try {
+                        // Validate AWS credentials using sts get-caller-identity
+                        echo "Validating AWS Credentials and Account: ${params.AWS_ACCOUNT_ID}"
+
+                        // Get AWS caller identity to verify the AWS credentials
+                        def stsResult = sh(script: "aws sts get-caller-identity --region ${params.AWS_REGION}", returnStdout: true).trim()
+                        
+                        // Check if the AWS account ID matches the expected one
+                        if (!stsResult.contains("Account")) {
+                            error "Invalid AWS credentials or account. Unable to verify account."
+                        }
+
+                        def awsAccountId = stsResult.tokenize("\n").find { it.startsWith("Account") }?.split(":")[1]?.trim()
+
+                        if (awsAccountId != params.AWS_ACCOUNT_ID) {
+                            error "Provided AWS Account ID does not match the authenticated account ID. Expected: ${params.AWS_ACCOUNT_ID}, but found: ${awsAccountId}."
+                        }
+
+                        echo "AWS credentials validated successfully for account: ${awsAccountId}"
+
+                    } catch (Exception e) {
+                        echo "Error during AWS credentials or account validation: ${e.getMessage()}"
+                        currentBuild.result = 'FAILURE'
+                        error "AWS validation failed. Terminating pipeline."
+                    }
+                }
+            }
+        }
+
         stage('List and Validate EC2 Instances') {
             steps {
                 script {
