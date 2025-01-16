@@ -14,9 +14,12 @@ pipeline {
                         // Validate AWS credentials using sts get-caller-identity
                         echo "Validating AWS Credentials and Account: ${params.AWS_ACCOUNT_ID}"
 
-                        // Get AWS caller identity to verify the AWS credentials
+                        // Run sts get-caller-identity to verify credentials and current account
                         def stsResult = sh(script: "aws sts get-caller-identity --region ${params.AWS_REGION}", returnStdout: true).trim()
-                        
+
+                        // Debug the stsResult to understand what we're getting
+                        echo "STS Result: ${stsResult}"
+
                         // Check if the AWS account ID matches the expected one
                         if (!stsResult.contains("Account")) {
                             error "Invalid AWS credentials or account. Unable to verify account."
@@ -54,6 +57,9 @@ pipeline {
                             --output text
                         """, returnStdout: true).trim()
 
+                        // Debug the ec2Instances output
+                        echo "EC2 Instances: ${ec2Instances}"
+
                         // Check if we found any EC2 instances
                         if (ec2Instances) {
                             def instancesToDelete = []
@@ -81,6 +87,9 @@ pipeline {
                                             aws ec2 terminate-instances --instance-ids ${instanceId} --region ${params.AWS_REGION} \
                                             --query 'TerminatingInstances[0].InstanceId' --output text
                                         """, returnStdout: true).trim()
+
+                                        // Debug the termination result
+                                        echo "Termination Result: ${terminateResult}"
 
                                         // Check if termination was successful
                                         if (terminateResult == instanceId) {
